@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Avukatın Yolu</title>
+  <style>
+    /* Genel stil */
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #eee;
+    }
+    #gameCanvas {
+      background: #fff;
+      display: block;
+      margin: 0 auto;
+    }
+    /* Bilgi paneli */
+    #infoPanel {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.5);
+      color: #fff;
+      padding: 5px 10px;
+      border-radius: 5px;
+      font-family: sans-serif;
+      font-size: 14px;
+    }
+    /* Joystick konteyneri */
+    #joystickContainer {
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      width: 100px;
+      height: 100px;
+      touch-action: none;
+    }
+    .joystick-base {
+      position: absolute;
+      width: 100px;
+      height: 100px;
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 50%;
+    }
+    .joystick-stick {
+      position: absolute;
+      left: 35px;
+      top: 35px;
+      width: 30px;
+      height: 30px;
+      background: rgba(0, 0, 0, 0.5);
+      border-radius: 50%;
+    }
+  </style>
+</head>
+<body>
+  <!-- Oyun alanı -->
+  <canvas id="gameCanvas"></canvas>
+  <!-- Bilgi paneli: Skor, seviye, aktif efektler -->
+  <div id="infoPanel">
+    <div id="score">Skor: 0</div>
+    <div id="level">Seviye: Öğrenci (Seviye 1)</div>
+    <div id="effects"></div>
+  </div>
+  <!-- Joystick: Sadece mobilde kullanılacak -->
+  <div id="joystickContainer">
+    <div class="joystick-base">
+      <div class="joystick-stick" id="joystick"></div>
+    </div>
+  </div>
+
+  <script>
+    // Canvas ve boyut ayarı
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // Global değişkenler
+    let score = 0;
+    let level = 1;
+    const levelNames = [
+      {min: 0, max: 100, name: "Öğrenci (Seviye 1)"},
+      {min: 100, max: 300, name: "Stajyer Avukat (Seviye 2)"},
+      {min: 300, max: 500, name: "Çalışkan Avukat (Seviye 3)"},
+      {min: 500, max: 650, name: "İyi Avukat (Seviye 4)"},
+      {min: 650, max: 750, name: "Karla Avukatı (Seviye 5)"},
+      {min: 750, max: 1000, name: "Karla Büyüdü (Seviye 6)"}
+    ];
+    let activeEffects = [];
+
+    // Avukat oyuncu objesi
+    const player = {
+      x: canvas.width / 2,
+      y: canvas.height / 2,
+      width: 50,
+      height: 50,
+      speed: 5,
+      image: new Image()
+    };
+    player.image.src = "https://i.postimg.cc/1X6PVKXx/avukat.webp";
+
+    // Oyun içindeki nesneler (dava, güçlendirici, zayıflatıcı)
+    let gameObjects = [];
+
+    // Zaman kontrolü için
+    let lastCaseSpawn = 0;
+    let lastSabirSpawn = 0;
+    let lastJCIspawn = 0;
+    let lastDebuffSpawn = 0;
+    const sabirInterval = 30000; // 30 saniyede bir
+    const jciInterval = 25000;   // 25 saniyede bir
+    const debuffInterval = 15000; // 15 saniyede bir
+
+    // Klavye kontrolü
+    let keys = {};
+    window.addEventListener('keydown', e => keys[e.key] = true);
+    window.addEventListener('keyup', e => keys[e.key] = false);
+
+    // Mobil joystick kontrolü
+    const joystick = document.getElementById('joystick');
+    const joystickContainer = document.getElementById('joystickContainer');
+    let joystickData = { active: false, startX: 0, startY: 0, currentX: 0, currentY: 0 };
+    joystickContainer.addEventListener('touchstart', e => {
+      const touch = e.touches[0];
+      joystickData.active = true;
+      joystickData.startX = touch.clientX;
+      joystickData.startY = touch.clientY;
+    });
+    joystickContainer.addEventListener('touchmove', e => {
+      const touch = e.touches[0];
+      joystickData.currentX = touch.clientX;
+      joystickData.currentY = touch.clientY;
+    });
+    joystickContainer.addEventListener('touchend', e => {
+      joystickData.active = false;
+      joystickData.startX = 0;
+      joystickData.startY = 0;
+      joystickData.currentX = 0;
+      joystickData.currentY = 0;
+      joystick.style.transform = "translate(0,0)";
+    });
+    function getJoystickDirection() {
+      if (!joystickData.active) return { dx: 0, dy: 0 };
+      let dx = joystickData.currentX - joystickData.startX;
+      let dy = joystickData.currentY - joystickData.startY;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const maxDistance = 30;
+      if (distance > maxDistance) {
+        dx = dx / distance * maxDistance;
+        dy = dy / distance * maxDistance;
+      }
+      joystick.style.transform = `translate(${dx}px, ${dy}px)`;
+      return { dx: dx / maxDistance, dy: dy / maxDistance };
+    }
+
+    // Oyun nesneleri için sınıf
+    class GameObject {
+      constructor(x, y, width, height, imageSrc, duration, type, extra) {
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
+        this.image = new Image();
+        this.image.src = imageSrc;
+        this.spawnTime = Date.now();
+        this.duration = duration * 1000; // saniyeyi milisaniyeye çevirme
+        this.type = type; // "case", "sabir", "jci", "debuff"
+        this.extra = extra || {}; // ek bilgiler: dava adı, puan vs.
+      }
+      isExpired() {
+        return (Date.now() - this.spawnTime) > this.duration;
+      }
+      draw() {
+        ctx.drawImage(this.image, this.x, this.y, this.width, this.height);
+      }
+    }
+
+    // Rastgele dava oluşturma fonksiyonu
+    function spawnCase() {
+      const cases = [
+        { name: "Araç Kaza Davası", points: 20, prob: 0.20, duration: 10, img: "https://i.postimg.cc/bNnyMqzy/arac-kaza.png" },
+        { name: "İş Hukuku Davası", points: 30, prob: 0.20, duration: 10, img: "https://i.postimg.cc/NGrQnQ4N/is-c-i-davas.png" },
+        { name: "Boşanma Davası", points: 30, prob: 0.25, duration: 12, img: "https://i.postimg.cc/C19SK2FH/bos-anma-davas.png" },
+        { name: "Düzenli Danışmanlık Davası", points: 70, prob: 0.15, duration: 7, img: "https://i.postimg.cc/gkFGF1tG/du-zenli-dan-s-manl-k.webp" },
+        { name: "KVKK Davası", points: 80, prob: 0.10, duration: 5, img: "https://i.postimg.cc/7L6kn4hn/kvkk.png" },
+        { name: "Çıtır Danışmanlık Davası", points: 45, prob: 0.10, duration: 6, img: "https://postimg.cc/62xkfD3k" }
+      ];
+      let rnd = Math.random();
+      let sum = 0, selected;
+      for (let c of cases) {
+        sum += c.prob;
+        if (rnd <= sum) { selected = c; break; }
+      }
+      if (!selected) selected = cases[0];
+      const x = Math.random() * (canvas.width - 50);
+      const y = Math.random() * (canvas.height - 50);
+      gameObjects.push(new GameObject(x, y, 50, 50, selected.img, selected.duration, "case", { name: selected.name, points: selected.points }));
+    }
+
+    // Güçlendirici ve zayıflatıcı oluşturma fonksiyonları
+    function spawnSabir() {
+      const x = Math.random() * (canvas.width - 40);
+      const y = Math.random() * (canvas.height - 40);
+      gameObjects.push(new GameObject(x, y, 40, 40, "https://i.postimg.cc/T3Qxb1dP/sabir-k-c-r.webp", 10, "sabir"));
+    }
+    function spawnJCI() {
+      const x = Math.random() * (canvas.width - 40);
+      const y = Math.random() * (canvas.height - 40);
+      gameObjects.push(new GameObject(x, y, 40, 40, "https://i.postimg.cc/SxmqjCp5/jc.png", 6, "jci"));
+    }
+    function spawnDebuff() {
+      const x = Math.random() * (canvas.width - 40);
+      const y = Math.random() * (canvas.height - 40);
+      gameObjects.push(new GameObject(x, y, 40, 40, "https://i.postimg.cc/wTXg6FnL/sabirsizlik.png", 8, "debuff"));
+    }
+
+    // Çarpışma kontrolü
+    function isColliding(a, b) {
+      return !(a.x + a.width < b.x || a.x > b.x + b.width || a.y + a.height < b.y || a.y > b.y + b.height);
+    }
+
+    // Seviye güncelleme
+    function updateLevel() {
+      for (let i = levelNames.length - 1; i >= 0; i--) {
+        if (score >= levelNames[i].min) {
+          level = i + 1;
+          document.getElementById('level').innerText = "Seviye: " + levelNames[i].name;
+          break;
+        }
+      }
+    }
+
+    // Ana güncelleme fonksiyonu
+    function update(deltaTime) {
+      // Klavye kontrolü
+      if (keys["ArrowUp"] || keys["w"]) { player.y -= player.speed; }
+      if (keys["ArrowDown"] || keys["s"]) { player.y += player.speed; }
+      if (keys["ArrowLeft"] || keys["a"]) { player.x -= player.speed; }
+      if (keys["ArrowRight"] || keys["d"]) { player.x += player.speed; }
+      // Mobil joystick kontrolü
+      const jDir = getJoystickDirection();
+      if (joystickData.active) {
+        player.x += jDir.dx * player.speed;
+        player.y += jDir.dy * player.speed;
+      }
+      // Oyuncu sınır kontrolü
+      player.x = Math.max(0, Math.min(canvas.width - player.width, player.x));
+      player.y = Math.max(0, Math.min(canvas.height - player.height, player.y));
+
+      // Davaları 2 saniyede bir oluştur
+      if (Date.now() - lastCaseSpawn > 2000) {
+        spawnCase();
+        lastCaseSpawn = Date.now();
+      }
+      // Güçlendirici ve zayıflatıcı spawn'ları
+      if (Date.now() - lastSabirSpawn > sabirInterval) {
+        spawnSabir();
+        lastSabirSpawn = Date.now();
+      }
+      if (Date.now() - lastJCIspawn > jciInterval) {
+        spawnJCI();
+        lastJCIspawn = Date.now();
+      }
+      if (Date.now() - lastDebuffSpawn > debuffInterval) {
+        spawnDebuff();
+        lastDebuffSpawn = Date.now();
+      }
+
+      // Çarpışmaları kontrol et
+      for (let i = gameObjects.length - 1; i >= 0; i--) {
+        const obj = gameObjects[i];
+        if (isColliding(player, obj)) {
+          if (obj.type === "case") {
+            let casePoints = obj.extra.points;
+            // JCI etkisi aktif ve KVKK davasıysa ekstra 100 puan
+            if (obj.extra.name === "KVKK Davası" && activeEffects.find(e => e.type === "jci")) {
+              casePoints += 100;
+            }
+            // Sabir etkisi varsa puan iki katına çıkar
+            if (activeEffects.find(e => e.type === "sabir")) {
+              casePoints *= 2;
+            }
+            score += casePoints;
+          } else if (obj.type === "sabir") {
+            activeEffects.push({ type: "sabir", endTime: Date.now() + 20000, label: "Sabir Kıcır Etkisi Aktif" });
+          } else if (obj.type === "jci") {
+            activeEffects.push({ type: "jci", endTime: Date.now() + 15000, label: "JCI Etkisi Aktif" });
+          } else if (obj.type === "debuff") {
+            score -= 50;
+            activeEffects.push({ type: "debuff", endTime: Date.now() + 3000, label: "Sabirsizlik Yüzünden -50 Puan Aldın" });
+          }
+          gameObjects.splice(i, 1);
+          updateLevel();
+        }
+      }
+
+      // Süresi dolan nesneleri ve efektleri kaldır
+      gameObjects = gameObjects.filter(obj => !obj.isExpired());
+      activeEffects = activeEffects.filter(effect => Date.now() < effect.endTime);
+
+      // Oyun sonlanma kontrolü
+      if (score >= 1000) {
+        alert("Tebrikler, oyunu tamamladınız! Toplam puan: " + score);
+        document.location.reload();
+      }
+
+      // Bilgi panelini güncelle
+      const effectsText = activeEffects.map(e => e.label).join(" | ");
+      document.getElementById('score').innerText = "Skor: " + score;
+      document.getElementById('effects').innerText = effectsText;
+    }
+
+    // Çizim fonksiyonu
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(player.image, player.x, player.y, player.width, player.height);
+      gameObjects.forEach(obj => obj.draw());
+    }
+
+    // Oyun döngüsü
+    let lastTime = 0;
+    function gameLoop(timestamp) {
+      const deltaTime = timestamp - lastTime;
+      lastTime = timestamp;
+      update(deltaTime);
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+    requestAnimationFrame(gameLoop);
+  </script>
+</body>
+</html>
